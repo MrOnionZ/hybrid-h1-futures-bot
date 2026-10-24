@@ -1,7 +1,7 @@
 # Hybrid H1 Futures Bot (paper-first)
 
 A self-hosted crypto futures trading bot for Binance USD-M perpetuals built on
-the Hybrid 00xxxx/SMA50 spec (`prompt.md`). Hourly candles, market execution,
+the Hybrid 00xxxx/SMA50 spec. Hourly candles, market execution,
 range-reversion structure play with trendline break/BOS confirmation, paper
 broker with exchange-identical fill model, and a hard mode-isolation layer
 (PAPER/BACKTEST/TESTNET/LIVE). **Live trading is disabled by default.**
@@ -63,7 +63,7 @@ blocks everything while it is active.
    reconciliation and `UNKNOWN` order states first.
 6. Only after all of the above: LIVE gates + `--confirm`.
 
-## Engine conventions (see prompt.md for the full spec)
+## Engine conventions
 
 - Pivots confirm only after the right window (`pivot_right=3`); ties keep the
   earliest touch. No lookahead anywhere.
@@ -91,8 +91,8 @@ blocks everything while it is active.
   `#funding_default_rate` unless live funding is available.
 - Paper fills use the latest *fresh* quote (`#quote_max_age`); exits fill on
   finished H1 candles, stop-before-target when both are touched.
-- The USD TVUL breakout stats in prompt.md are not verified against Binance
-  history; the default TVUL type is a conservative guess (documented in
+- The USD TVUL breakout stats from the original spec are not verified against
+  Binance history; the default TVUL type is a conservative guess (documented in
   config.py).
 
 ## Trading safety

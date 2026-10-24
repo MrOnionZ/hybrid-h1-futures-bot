@@ -9,7 +9,7 @@ onboarding doc for coding agents: read it before touching anything.
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-python -m pytest tests -q          # MUST be 165 passed; this is the contract
+python -m pytest tests -q          # MUST be 166 passed; this is the contract
 python -m trading_bot.main setup  # interactive .env wizard (Enter = defaults)
 python -m trading_bot.main paper  # live data, simulated fills, no API keys
 ```
@@ -30,7 +30,7 @@ python -m trading_bot.main paper  # live data, simulated fills, no API keys
 3. **H1 only**: `timeframe` must be `1h` (`_tf_ms`/`validate` reject others).
 4. **No lookahead**: pivots usable only at/after `confirmed_index`; signals
    consume only finalized candles; backtest fills at the NEXT candle open.
-5. **Tests are the behavior contract**: 165 tests encode the spec. If you
+5. **Tests are the behavior contract**: 166 tests encode the spec. If you
    refactor, update test *imports* freely but never gut an assertion. Any
    behavior change must be deliberate and explained.
 6. **Spec constants** (`config.py`, `SPEC_*`): risk 1%/trade, 2% cap,
@@ -93,6 +93,10 @@ the scanner, plus `learning.py`/`optimizer.py`).
 - **Optimization runs are crash-safe**: `optimization_runs` rows stuck in
   RUNNING are flipped to INTERRUPTED on store open; promotion is the last
   atomic step, so a crash mid-run never changes the active version.
+- **RAM budget (<300MB)**: pandas is deliberately OUT of the runtime
+  (`validate_ohlcv` is plain Python, −59MB) and ccxt must stay lazy (eager
+  package init, +74MB, loads only on first exchange access). No top-level
+  heavy imports in `trading_bot/*.py`; `tests/test_memory.py` enforces both.
 
 ## Common tasks
 
@@ -114,7 +118,7 @@ the scanner, plus `learning.py`/`optimizer.py`).
 
 ## Definition of done for any change
 
-1. `python -m pytest tests -q` → 165 passed (add tests for new behavior).
+1. `python -m pytest tests -q` → 166 passed (add tests for new behavior).
 2. `python -m trading_bot.main --help` still works (CLI parses).
 3. No new runtime dependencies without checking `requirements.txt` first
    (stdlib covers almost everything here: `http.server`, `sqlite3`,

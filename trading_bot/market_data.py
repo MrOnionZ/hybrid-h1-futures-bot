@@ -13,8 +13,8 @@ OHLCV rules (documented):
     unreliable for this cycle (the scanner suppresses it);
   - a symbol without enough history for the slowest indicator is unreliable.
 
-The strategy consumes plain candle dicts; pandas is used internally for the
-validation arithmetic only.
+The strategy consumes plain candle dicts; validation runs on plain Python
+(no pandas import in the runtime path -- the process stays ~60MB lighter).
 
 Universe discovery (merged from the former universe.py):
   1. load exchange markets once;
@@ -32,18 +32,16 @@ parameter) - operators should record the symbol list used in each experiment.
 from __future__ import annotations
 
 import logging
+import math
+import time
 from dataclasses import dataclass, field
 from typing import Optional
-
-import pandas as pd
 
 from .common import MarketInfo
 from .config import BotConfig
 from .exchange_client import ExchangeClient, ExchangeClientError
 
 log = logging.getLogger(__name__)
-
-COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
 
 
 @dataclass
@@ -82,8 +80,13 @@ def validate_ohlcv(symbol: str, rows: list, timeframe_ms: int,
                    now_ms: Optional[int] = None,
                    min_bars: int = 60,
                    max_staleness_intervals: int = 2) -> CandleSeries:
-    """Validate raw ccxt OHLCV rows (lists of [ts, o, h, l, c, v])."""
-    now_ms = int(now_ms if now_ms is not None else pd.Timestamp.now(tz="UTC").value // 10**6)
+    """Validate raw ccxt OHLCV rows (lists of [ts, o, h, l, c, v]).
+
+    Stage order mirrors the former pandas implementation exactly:
+    coerce-drop -> dedup (keep last) -> sort -> gaps -> geometry -> forming.
+    Non-numeric/NaN rows are dropped SILENTLY (never counted as invalid).
+    """
+    now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     issues = DataIssues()
 
     if not rows:
@@ -91,49 +94,54 @@ def validate_ohlcv(symbol: str, rows: list, timeframe_ms: int,
         issues.messages.append("no rows returned")
         return CandleSeries(symbol, [], 0, issues, False)
 
-    df = pd.DataFrame([list(r)[:6] for r in rows], columns=COLUMNS)
-    for col in COLUMNS:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna().reset_index(drop=True)
+    parsed = 0
+    by_ts: dict = {}
+    for row in rows:
+        vals = list(row)[:6]
+        if len(vals) < 6:
+            continue
+        try:
+            ts, o, h, l, c, v = (float(x) for x in vals)
+        except (TypeError, ValueError):
+            continue
+        if any(math.isnan(x) for x in (ts, o, h, l, c, v)):
+            continue
+        parsed += 1
+        by_ts[ts] = (ts, o, h, l, c, v)   # drop_duplicates(keep="last")
 
-    before = len(df)
-    df = df.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
-    issues.duplicates = before - len(df)
+    issues.duplicates = parsed - len(by_ts)
     if issues.duplicates:
         issues.messages.append(f"{issues.duplicates} duplicate candles dropped")
 
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    ordered = sorted(by_ts.values(), key=lambda t: t[0])
 
     # gap detection (recorded, NOT filled)
-    if len(df) >= 2:
-        diffs = df["timestamp"].diff().dropna()
-        issues.gaps = int((diffs > timeframe_ms).sum())
+    if len(ordered) >= 2:
+        issues.gaps = sum(1 for i in range(1, len(ordered))
+                          if ordered[i][0] - ordered[i - 1][0] > timeframe_ms)
         if issues.gaps:
             issues.messages.append(f"{issues.gaps} gap(s) in history; no forward-fill applied")
 
-    # invalid OHLC geometry
-    bad = (
-        (df["high"] < df["low"]) |
-        (df["high"] < df[["open", "close"]].max(axis=1)) |
-        (df["low"] > df[["open", "close"]].min(axis=1)) |
-        (df[["open", "high", "low", "close"]] <= 0).any(axis=1)
-    )
-    if bool(bad.any()):
-        issues.invalid = int(bad.sum())
+    # invalid OHLC geometry (volume is NOT part of the geometry check)
+    bad = [t for t in ordered
+           if t[2] < t[3]                       # high < low
+           or t[2] < max(t[1], t[4])            # high < max(open, close)
+           or t[3] > min(t[1], t[4])            # low > min(open, close)
+           or any(x <= 0 for x in (t[1], t[2], t[3], t[4]))]  # open/high/low/close <= 0
+    if bad:
+        issues.invalid = len(bad)
         issues.messages.append(f"{issues.invalid} invalid candles dropped")
-        df = df[~bad].reset_index(drop=True)
+        bad_set = set(bad)
+        ordered = [t for t in ordered if t not in bad_set]
 
     # drop the still-forming last candle
-    if len(df):
-        last_open_ts = int(df["timestamp"].iloc[-1])
-        if last_open_ts + timeframe_ms > now_ms:
-            df = df.iloc[:-1].reset_index(drop=True)
-            issues.dropped_forming = 1
-            issues.messages.append("forming candle dropped")
+    if ordered and int(ordered[-1][0]) + timeframe_ms > now_ms:
+        ordered.pop()
+        issues.dropped_forming = 1
+        issues.messages.append("forming candle dropped")
 
-    candles = [dict(timestamp=int(r.timestamp), open=float(r.open), high=float(r.high),
-                    low=float(r.low), close=float(r.close), volume=float(r.volume))
-               for r in df.itertuples(index=False)]
+    candles = [dict(timestamp=int(t[0]), open=t[1], high=t[2],
+                    low=t[3], close=t[4], volume=t[5]) for t in ordered]
 
     last_closed_ts = candles[-1]["timestamp"] if candles else 0
 
